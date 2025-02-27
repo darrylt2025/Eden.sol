@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+
+contract EdenToken is ERC20Upgradeable, AccessControlUpgradeable, ReentrancyGuard {
+    mapping(address => uint256) public lockdownEnd;
+
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
+    bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
+    bytes32 public constant LOCKER_ROLE = keccak256("LOCKER_ROLE");
+
+    string public constant VERSION = "1.0.0"; // Added for upgrade tracking
+
+    event LockdownCancelled(address indexed user);
+    event AccountLocked(address indexed user, uint256 duration);
+
+    function initialize(string memory name, string memory symbol, uint256 initialSupply, address multiSigWallet) initializer public {
+        __ERC20_init(name, symbol);
+        __AccessControl_init();
+
+        // Set multi-sig wallet as admin and initial role holder
+        _setupRole(ADMIN_ROLE, multiSigWallet);
+        _setRoleAdmin(ADMIN_ROLE, ADMIN_ROLE);
+        _setRoleAdmin(MINTER_ROLE, ADMIN_ROLE);
+        _setRoleAdmin(LOCKER_ROLE, ADMIN_ROLE);
+
+        _setupRole(MINTER_ROLE, multiSigWallet);
+        _setupRole(LOCKER_ROLE, multiSigWallet);
+
+        _mint(msg.sender, initialSupply);
+    }
+
+    function transfer(address to, uint256 amount) public nonReentrant override returns (bool) {
+        require(lockdownEnd[msg.sender] <= block.timestamp, "Account is currently locked down.");
+        _transfer(msg.sender, to, amount);
+        return true;
+    }
+
+    function lockAccount(address userAddress, uint256 duration) public onlyRole(LOCKER_ROLE) returns (bool) {
+        require(duration > 0, "Duration must be greater than zero.");
+        require(userAddress != address(0), "Invalid user address.");
+        uint256 expiration = block.timestamp + duration;
+        require(expiration >= block.timestamp && expiration < type(uint256).max, "Invalid lock duration.");
+        lockdownEnd[userAddress] = expiration;
+        emit AccountLocked(userAddress, duration);
+        return true;
+    }
+
+    function cancelLockdown(address user) public onlyRole(LOCKER_ROLE) returns (bool) {
+        require(user != address(0), "Invalid user address");
+        delete lockdownEnd[user];
+        emit LockdownCancelled(user);
+        return true;
+    }
+
+    function mint(address account, uint256 amount) public onlyRole(MINTER_ROLE) returns (bool) {
+        _mint(account, amount);
+        return true;
+    }
+
+    // Added for transparency and UI ease
+    function isLocked(address user) public view returns (bool) {
+        return lockdownEnd[user] > block.timestamp;
+    }
+
+    function getLockEnd(address user) public view returns (uint256) {
+        return lockdownEnd[user];
+    }
+}
