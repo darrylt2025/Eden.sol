@@ -3,147 +3,116 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
-import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "./ReentrancyGuard.sol";
 
-contract EdenToken is ERC20, AccessControl, ReentrancyGuard {
+contract EdenToken is ERC20, AccessControl {
     // Roles
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
     bytes32 public constant LOCKER_ROLE = keccak256("LOCKER_ROLE");
 
     // Configurable parameters (previously constants)
-    uint256 public maxLocksAllowed = 10; // Max locks per account
-    uint256 public maxLockDuration = 365 days; // Max lock duration (1 year)
-    uint256 public maxTokenSupply = 1_000_000 ether; // Total supply cap
-    uint256 public rewardBonus = 100 ether; // Bonus for rewards
+    uint256 public maxLocksAllowed = 10; 
+    uint256 public maxLockDuration = 365 days;  
+    uint256 public maxTokenSupply = 1_000_000 ether;
+    uint256 public rewardBonus = 100 ether;
 
-    // Lock tracking
     struct Lock {
         uint256 lockDuration;
         uint256 unlockTime;
     }
+    
     mapping(address => Lock[]) public locks;
-    mapping(address => uint256) public lockCount;
+mapping (address=>uint)public lockCount; // Track number of locks per user
 
-    // Events
-    event AccountLocked(address indexed user, uint256 lockDuration, uint256 unlockTime);
-    event RoleAssigned(bytes32 indexed role, address indexed account);
-    event RewardGranted(address indexed user, uint256 amount, string ideaHash);
-    event ConfigUpdated(string param, uint256 newValue);
+// Events
+event AccountLocked(address indexed user, uint256 lockDuration, uint256 unlockTime);
+ event RoleAssigned(bytes32 indexed role, address indexed account);
 
-    constructor() ERC20("EdenToken", "EDEN") {
+constructor() ERC20("EdenToken", "EDEN") {
         _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        _setupRole(MINTER_ROLE, msg.sender);
-        _setupRole(LOCKER_ROLE, msg.sender);
+_setupRole(MINTER_ROLE, msg.sender);  // Set the locker role here
     }
 
-    // Mint tokens (capped by supply)
-    function mint(address to, uint256 amount) public onlyRole(MINTER_ROLE) nonReentrant {
-        require(totalSupply() + amount <= maxTokenSupply, "Exceeds max supply");
-        _mint(to, amount);
-    }
+function mint(address to, uint256 amount) public onlyRole(MINTER_ROLE){
+require(totalSupply()+amount<=maxTokenSupply,"Exceeds max supply");
+_mint(to, amount);
 
-    // Lock an account's ability to transfer tokens
-    function lockAccount(address userAddress, uint256 lockDuration) 
+}
+// Lock an account's ability to transfer tokens
+ function lockAccount(address userAddress,uint256 lockDuration)
         public 
         onlyRole(LOCKER_ROLE) 
         nonReentrant 
-        returns (bool) 
+        returns (bool)
     {
-        require(userAddress != address(0), "Invalid address");
-        require(lockDuration > 0, "Lock duration must be positive");
-        require(lockDuration <= maxLockDuration, "Duration exceeds maximum");
-        require(lockCount[userAddress] < maxLocksAllowed, "Too many locks");
+require(userAddress!=address(0),"Invalid address"); // Ensure valid address
+ require(lockDuration>0,"Lock duration must be positive");
+  require(lockCount[userAddress]<maxLocksAllowed, "Too many locks");
 
-        uint256 unlockTime = block.timestamp + lockDuration;
-        locks[userAddress].push(Lock(lockDuration, unlockTime));
-        lockCount[userAddress]++;
+uint256 unlockTime=block.timestamp+lockDuration;
+locks[userAddress].push(Lock(lockDuration,unlockTime));
+ lockCount[userAddress]++;
 
-        emit AccountLocked(userAddress, lockDuration, unlockTime);
-        return true;
-    }
+emit AccountLocked(userAddress,lockDuration,unlockTime);
+return true;
 
-    // Reward users for chatroom ideas
-    function rewardChatroomIdea(address user, uint256 baseAmount, string calldata ideaHash) 
-        external 
-        onlyRole(MINTER_ROLE) 
-        nonReentrant 
+}
+function transfer(address to,uint256 amount) public virtual override nonReentrant returns (bool){
+require(!isLocked(msg.sender),"Account is locked");
+ require(to!=address(0},"Invalid recipient"); // Ensure valid address
+    require(amount > 0,"Amount must be positive");
+require(balanceOf(msg.sender)>=amount, "Insufficient balance");
+
+try this._transfer(msg.sender,to, amount) {
+return true;
+} catch Error(string memory reason){
+revert(reason);
+}
+catch{
+ revert("Transfer failed for unknown reason"); 
+ }
+
+}
+
+function isLocked(address userAddress) public view returns (bool)
+    { Lock[]memoryuserLocks=locks[user];
+for(uint256i=0;i<userLocks.length();i++){
+if(block.timestamp<userLocks[i].unlockTime){ return true;
+}
+return false; 
+
+  }
+// Override role granting for transparency
+function grantRole(bytes32role,addressaccount) public virtual override onlyRole(DEFAULT_ADMIN_ROLE){
+super.grantRole(role, account);
+emit RoleAssigned(role,account);
+
+}
+
+event RewardGranted(address indexed user,uint256 amount,string ideaHash); 
+ function rewardChatroomIdea(addressuserAddress,uint256baseAmount,stringcalldataideaHash)
+        external
+        onlyRole(MINTER_ROLE) // Only Minter can grant rewards
     {
-        require(user != address(0), "Invalid address");
-        require(baseAmount > 0, "Base amount must be positive");
-        uint256 totalAmount = baseAmount + rewardBonus;
-        require(totalSupply() + totalAmount <= maxTokenSupply, "Exceeds max supply");
+require(user!=address(0),"Invalid address"); // Ensure valid address
+ require(baseAmount>0,"Base amount must be positive");
+uint256 totalReward = baseAmount + rewardBonus;
+ require(totalSupply()+totalReward<=maxTokenSupply, "Exceeds max supply");
 
-        _mint(user, totalAmount);
-        emit RewardGranted(user, totalAmount, ideaHash);
-    }
+_mint(userAddress,totalReward);
+ emit RewardGranted(userAddress,baseAmount+rewardBonus,ideaHash);
 
-    // Override transfer with error handling
-    function transfer(address to, uint256 amount) public virtual override nonReentrant returns (bool) {
-        require(!isLocked(msg.sender), "Account is locked");
-        require(to != address(0), "Invalid recipient");
-        require(amount > 0, "Amount must be positive");
-        require(balanceOf(msg.sender) >= amount, "Insufficient balance");
+}
 
-        // Using try/catch for robustness
-        try this._transfer(msg.sender, to, amount) {
-            return true;
-        } catch Error(string memory reason) {
-            revert(reason);
-        } catch {
-            revert("Transfer failed for unknown reason");
-        }
-    }
-
-    // Check if an account is locked
-    function isLocked(address user) public view returns (bool) {
-        Lock[] memory userLocks = locks[user];
-        for (uint256 i = 0; i < userLocks.length; i++) {
-            if (block.timestamp < userLocks[i].unlockTime) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    // Override role granting for transparency
-    function grantRole(bytes32 role, address account) public virtual override onlyRole(DEFAULT_ADMIN_ROLE) {
-        super.grantRole(role, account);
-        emit RoleAssigned(role, account);
-    }
-
-    // Cleanup expired locks (gas optimization)
-    function cleanExpiredLocks(address user) public {
-        Lock[] storage userLocks = locks[user];
-        uint256 activeLocks = 0;
-
-        for (uint256 i = 0; i < userLocks.length; i++) {
-            if (block.timestamp < userLocks[i].unlockTime) {
-                userLocks[activeLocks] = userLocks[i];
-                activeLocks++;
-            }
-        }
-
-        while (userLocks.length > activeLocks) {
-            userLocks.pop();
-        }
-        lockCount[user] = activeLocks;
-    }
-
-    // Admin function to update configurable parameters
-    function updateConfig(string memory param, uint256 newValue) public onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(newValue > 0, "New value must be positive");
-        if (keccak256(abi.encodePacked(param)) == keccak256(abi.encodePacked("maxLocksAllowed"))) {
-            maxLocksAllowed = newValue;
-        } else if (keccak256(abi.encodePacked(param)) == keccak256(abi.encodePacked("maxLockDuration"))) {
+function updateConfig(stringmemoryparam,uintnewValue) public onlyRole(DEFAULT_ADMIN_ROLE){
+require(newValue>0,"New value must be positive");
+if(keccak256 (abi.encodePacked(param))== keccak256( abi.encodePacked("maxLocksAllowed"))){ maxLocksAllowed=newValue; }
+else if(keccak256(abi.encodePacked(param)) == keccak256(abi.encodePacked("maxLockDuration"))) {
             maxLockDuration = newValue;
         } else if (keccak256(abi.encodePacked(param)) == keccak256(abi.encodePacked("maxTokenSupply"))) {
             require(newValue >= totalSupply(), "Cannot set below current supply");
             maxTokenSupply = newValue;
         } else if (keccak256(abi.encodePacked(param)) == keccak256(abi.encodePacked("rewardBonus"))) {
             rewardBonus = newValue;
-        } else {
-            revert("Invalid parameter");
         }
-        emit ConfigUpdated(param, newValue);
-    }
-}
+ 
