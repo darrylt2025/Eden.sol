@@ -59,7 +59,7 @@ return true;
 }
 function transfer(address to,uint256 amount) public virtual override nonReentrant returns (bool){
 require(!isLocked(msg.sender),"Account is locked");
- require(to!=address(0},"Invalid recipient"); // Ensure valid address
+ require(to!=address(0),"Invalid recipient"); // Ensure valid address
     require(amount > 0,"Amount must be positive");
 require(balanceOf(msg.sender)>=amount, "Insufficient balance");
 
