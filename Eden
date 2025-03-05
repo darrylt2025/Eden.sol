@@ -1,118 +1,78 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import "./ReentrancyGuard.sol";
+import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
-contract EdenToken is ERC20, AccessControl {
-    // Roles
+contract EdenToken is ERC20Upgradeable, AccessControlUpgradeable, UUPSUpgradeable, ReentrancyGuard {
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
-    bytes32 public constant LOCKER_ROLE = keccak256("LOCKER_ROLE");
 
-    // Configurable parameters (previously constants)
-    uint256 public maxLocksAllowed = 10; 
-    uint256 public maxLockDuration = 365 days;  
-    uint256 public maxTokenSupply = 1_000_000 ether;
-    uint256 public rewardBonus = 100 ether;
+    uint256 public constant FACE_VALUE = 0.50 ether; // $0.50 in wei (assuming 18 decimals)
+    uint256 public kennedyHalfDollarReserve; // Tracks coins in reserve
+    uint256 public totalBurned; // Tracks burned tokens
 
-    struct Lock {
-        uint256 lockDuration;
-        uint256 unlockTime;
-    }
-    
-    mapping(address => Lock[]) public locks;
-mapping (address=>uint)public lockCount; // Track number of locks per user
+    event TokensSold(address indexed buyer, uint256 amount, uint256 cost);
+    event TokensBoughtBack(address indexed seller, uint256 amount, uint256 payout);
+    event ReserveUpdated(uint256 newReserve);
 
-// Events
-event AccountLocked(address indexed user, uint256 lockDuration, uint256 unlockTime);
- event RoleAssigned(bytes32 indexed role, address indexed account);
+    function initialize(address multiSigWallet) public initializer {
+        __ERC20_init("EdenToken", "EDEN");
+        __AccessControl_init();
+        __UUPSUpgradeable_init();
 
-constructor() ERC20("EdenToken", "EDEN") {
-        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
-_setupRole(MINTER_ROLE, msg.sender);  // Set the locker role here
+        _setupRole(ADMIN_ROLE, multiSigWallet);
+        _setRoleAdmin(ADMIN_ROLE, ADMIN_ROLE);
+        _setRoleAdmin(MINTER_ROLE, ADMIN_ROLE);
+        _setupRole(MINTER_ROLE, multiSigWallet);
+
+        kennedyHalfDollarReserve = 200; // Initial 200 coins
+        _mint(multiSigWallet, 200 * 10**18); // 200 tokens
     }
 
-function mint(address to, uint256 amount) public onlyRole(MINTER_ROLE){
-require(totalSupply()+amount<=maxTokenSupply,"Exceeds max supply");
-_mint(to, amount);
+    function _authorizeUpgrade(address) internal override onlyRole(ADMIN_ROLE) {}
 
-}
-// Lock an account's ability to transfer tokens
- function lockAccount(address userAddress,uint256 lockDuration)
-        public 
-        onlyRole(LOCKER_ROLE) 
-        nonReentrant 
-        returns (bool)
-    {
-require(userAddress!=address(0),"Invalid address"); // Ensure valid address
- require(lockDuration>0,"Lock duration must be positive");
-  require(lockCount[userAddress]<maxLocksAllowed, "Too many locks");
+    // Buy tokens at $1.54 each
+    function buyTokens(uint256 amount) external payable nonReentrant {
+        require(amount <= balanceOf(address(this)), "Not enough tokens available");
+        uint256 cost = amount * 154 / 100; // $1.54 per token (scaled for 18 decimals)
+        require(msg.value >= cost, "Insufficient payment");
 
-uint256 unlockTime=block.timestamp+lockDuration;
-locks[userAddress].push(Lock(lockDuration,unlockTime));
- lockCount[userAddress]++;
+        _transfer(address(this), msg.sender, amount);
+        emit TokensSold(msg.sender, amount, cost);
 
-emit AccountLocked(userAddress,lockDuration,unlockTime);
-return true;
-
-}
-function transfer(address to,uint256 amount) public virtual override nonReentrant returns (bool){
-require(!isLocked(msg.sender),"Account is locked");
- require(to!=address(0),"Invalid recipient"); // Ensure valid address
-    require(amount > 0,"Amount must be positive");
-require(balanceOf(msg.sender)>=amount, "Insufficient balance");
-
-try this._transfer(msg.sender,to, amount) {
-return true;
-} catch Error(string memory reason){
-revert(reason);
-}
-catch{
- revert("Transfer failed for unknown reason"); 
- }
-
-}
-
-function isLocked(address userAddress) public view returns (bool)
-    { Lock[]memoryuserLocks=locks[user];
-for(uint256i=0;i<userLocks.length();i++){
-if(block.timestamp<userLocks[i].unlockTime){ return true;
-}
-return false; 
-
-  }
-// Override role granting for transparency
-function grantRole(bytes32role,addressaccount) public virtual override onlyRole(DEFAULT_ADMIN_ROLE){
-super.grantRole(role, account);
-emit RoleAssigned(role,account);
-
-}
-
-event RewardGranted(address indexed user,uint256 amount,string ideaHash); 
- function rewardChatroomIdea(addressuserAddress,uint256baseAmount,stringcalldataideaHash)
-        external
-        onlyRole(MINTER_ROLE) // Only Minter can grant rewards
-    {
-require(user!=address(0),"Invalid address"); // Ensure valid address
- require(baseAmount>0,"Base amount must be positive");
-uint256 totalReward = baseAmount + rewardBonus;
- require(totalSupply()+totalReward<=maxTokenSupply, "Exceeds max supply");
-
-_mint(userAddress,totalReward);
- emit RewardGranted(userAddress,baseAmount+rewardBonus,ideaHash);
-
-}
-
-function updateConfig(stringmemoryparam,uintnewValue) public onlyRole(DEFAULT_ADMIN_ROLE){
-require(newValue>0,"New value must be positive");
-if(keccak256 (abi.encodePacked(param))== keccak256( abi.encodePacked("maxLocksAllowed"))){ maxLocksAllowed=newValue; }
-else if(keccak256(abi.encodePacked(param)) == keccak256(abi.encodePacked("maxLockDuration"))) {
-            maxLockDuration = newValue;
-        } else if (keccak256(abi.encodePacked(param)) == keccak256(abi.encodePacked("maxTokenSupply"))) {
-            require(newValue >= totalSupply(), "Cannot set below current supply");
-            maxTokenSupply = newValue;
-        } else if (keccak256(abi.encodePacked(param)) == keccak256(abi.encodePacked("rewardBonus"))) {
-            rewardBonus = newValue;
+        // Excess ETH refunded
+        if (msg.value > cost) {
+            payable(msg.sender).transfer(msg.value - cost);
         }
- 
+    }
+
+    // Sell back at $0.50 face value, burn tokens
+    function sellBack(uint256 amount) external nonReentrant {
+        require(balanceOf(msg.sender) >= amount, "Insufficient balance");
+        uint256 payout = amount * FACE_VALUE / 10**18; // $0.50 per token
+        require(address(this).balance >= payout, "Insufficient contract funds");
+
+        _burn(msg.sender, amount);
+        totalBurned += amount;
+        payable(msg.sender).transfer(payout); // Debit card proxy—$0.50 ETH
+        emit TokensBoughtBack(msg.sender, amount, payout);
+    }
+
+    // Update reserve (admin adds coins from profits)
+    function updateReserve(uint256 newCoins) external onlyRole(ADMIN_ROLE) {
+        kennedyHalfDollarReserve += newCoins;
+        emit ReserveUpdated(kennedyHalfDollarReserve);
+    }
+
+    // Mint new tokens (if reserve allows)
+    function mint(address to, uint256 amount) external onlyRole(MINTER_ROLE) {
+        require(kennedyHalfDollarReserve >= totalSupply() / 10**18 + amount, "Reserve insufficient");
+        _mint(to, amount);
+    }
+
+    // Fund contract for buybacks
+    function fundBuyback() external payable onlyRole(ADMIN_ROLE) {}
+}
