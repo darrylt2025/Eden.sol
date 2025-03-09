@@ -5,59 +5,106 @@ import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/math/MathUpgradeable.sol"; // For safe min/max operations
 
 contract EdenToken is ERC20Upgradeable, AccessControlUpgradeable, UUPSUpgradeable, ReentrancyGuard {
     bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
     bytes32 public constant MINTER_ROLE = keccak256("MINTER_ROLE");
 
-    uint256 public constant FACE_VALUE = 0.50 ether; // $0.50 in wei (assuming 18 decimals)
+    uint256 public initialPrice; // Initial price in USD (e.g., $0.50 = 50) - scaled by 100
+    uint256 public reserveRatio; // Ratio of reserve to total supply (e.g., 10 = 10%) - scaled by 100
     uint256 public kennedyHalfDollarReserve; // Tracks coins in reserve
     uint256 public totalBurned; // Tracks burned tokens
+    uint256 public lastPriceUpdate; // Timestamp of the last price update
+    uint256 public priceUpdateInterval = 30 minutes; // How often the price can update (in seconds)
+    uint256 public priceFloor = 0; // Price floor (scaled by 100) - Initially 0, can be adjusted
+    uint256 public buybackPrice = 50; // $0.50 (scaled by 100) - Fixed Buyback Price
 
-    event TokensSold(address indexed buyer, uint256 amount, uint256 cost);
+    event TokensSold(address indexed buyer, address indexed buyer, uint256 amount, uint256 cost);
     event TokensBoughtBack(address indexed seller, uint256 amount, uint256 payout);
     event ReserveUpdated(uint256 newReserve);
+    event PriceUpdated(uint256 newPrice);
 
-    function initialize(address multiSigWallet) public initializer {
+    function initialize(address multiSigWallet, uint256 _initialPrice, uint256 _reserveRatio) public initializer {
         __ERC20_init("EdenToken", "EDEN");
         __AccessControl_init();
         __UUPSUpgradeable_init();
+        __MathUpgradeable_init(); // Initialize MathUpgradeable
 
         _setupRole(ADMIN_ROLE, multiSigWallet);
         _setRoleAdmin(ADMIN_ROLE, ADMIN_ROLE);
         _setRoleAdmin(MINTER_ROLE, ADMIN_ROLE);
         _setupRole(MINTER_ROLE, multiSigWallet);
 
+        initialPrice = _initialPrice; // Initial price in USD (scaled by 100)
+        reserveRatio = _reserveRatio;   // Reserve ratio (scaled by 100)
         kennedyHalfDollarReserve = 200; // Initial 200 coins
         _mint(multiSigWallet, 200 * 10**18); // 200 tokens
+        lastPriceUpdate = block.timestamp;
     }
 
     function _authorizeUpgrade(address) internal override onlyRole(ADMIN_ROLE) {}
 
-    // Buy tokens at $1.54 each
-    function buyTokens(uint256 amount) external payable nonReentrant {
-        require(amount <= balanceOf(address(this)), "Not enough tokens available");
-        uint256 cost = amount * 154 / 100; // $1.54 per token (scaled for 18 decimals)
-        require(msg.value >= cost, "Insufficient payment");
+    // Calculate current price (simple algorithmic approach)
+    function getCurrentPrice() public view returns (uint256) {
+        // Simple example: Price increases as a percentage of total supply relative to reserve
+        uint256 totalSupply = totalSupply() / 10**18; // Get total supply (without decimals)
+        uint256 targetReserve = (totalSupply * reserveRatio) / 100; // Calculate target reserve
 
-        _transfer(address(this), msg.sender, amount);
-        emit TokensSold(msg.sender, amount, cost);
+        uint256 price = initialPrice;
+
+        // Price increases if current reserve is below the target
+        if (kennedyHalfDollarReserve < targetReserve) {
+            uint256 diff = targetReserve - kennedyHalfDollarReserve;
+            price = price + (diff * initialPrice) / (100 * 10); // Increase price by a fraction of the difference
+        }
+        return price; // Price is in USD, scaled by 100
+    }
+
+    // Buy tokens
+    function buyTokens(address to, uint256 amount) external payable nonReentrant {
+        uint256 marketPrice = getMarketPrice(); // Get market price from oracle (scaled by 100)
+        uint256 thresholdPrice = priceFloor;
+
+        require(amount <= balanceOf(address(this)), "Not enough tokens available");
+
+        // Use a price floor if it's set
+        uint256 salePrice = marketPrice > thresholdPrice ? marketPrice : thresholdPrice;
+        // Or, you could use a slightly adjusted price:
+        // uint256 salePrice = (marketPrice * 99) / 100; // 99% of market price
+
+        uint256 cost = (amount * salePrice) / 100; // Cost in USD (scaled by 100)
+
+        // Assuming a fixed ETH/USD price for simplicity. Ideally, this should come from an oracle
+        uint256 ethPriceInUSD = 2000; // Example: $2000 per ETH (scaled by 1)
+        uint256 ethCost = (cost * 10**18) / ethPriceInUSD; // Cost in wei
+
+        require(msg.value >= ethCost, "Insufficient payment");
+
+        _transfer(address(this), to, amount);
+        emit TokensSold(msg.sender, to, amount, cost);
 
         // Excess ETH refunded
-        if (msg.value > cost) {
-            payable(msg.sender).transfer(msg.value - cost);
+        if (msg.value > ethCost) {
+            payable(msg.sender).transfer(msg.value - ethCost);
         }
     }
 
-    // Sell back at $0.50 face value, burn tokens
+    // Sell back tokens
     function sellBack(uint256 amount) external nonReentrant {
         require(balanceOf(msg.sender) >= amount, "Insufficient balance");
-        uint256 payout = amount * FACE_VALUE / 10**18; // $0.50 per token
-        require(address(this).balance >= payout, "Insufficient contract funds");
+
+        uint256 payout = (amount * buybackPrice) / 100; // Payout in USD (scaled by 100)
+
+        // Assuming a fixed ETH/USD price for simplicity. Ideally, this should come from an oracle
+        uint256 ethPriceInUSD = 2000; // Example: $2000 per ETH (scaled by 1)
+        uint256 ethPayout = (payout * 10**18) / ethPriceInUSD; // Payout in wei
+
+        require(address(this).balance >= ethPayout, "Insufficient contract funds");
 
         _burn(msg.sender, amount);
         totalBurned += amount;
-        payable(msg.sender).transfer(payout); // Debit card proxy—$0.50 ETH
+        payable(msg.sender).transfer(ethPayout);
         emit TokensBoughtBack(msg.sender, amount, payout);
     }
 
@@ -75,4 +122,40 @@ contract EdenToken is ERC20Upgradeable, AccessControlUpgradeable, UUPSUpgradeabl
 
     // Fund contract for buybacks
     function fundBuyback() external payable onlyRole(ADMIN_ROLE) {}
+
+    // Admin function to update the initial price
+    function updateInitialPrice(uint256 _newInitialPrice) external onlyRole(ADMIN_ROLE) {
+        initialPrice = _newInitialPrice;
+    }
+
+    // Admin function to update the reserve ratio
+    function updateReserveRatio(uint256 _newReserveRatio) external onlyRole(ADMIN_ROLE) {
+        reserveRatio = _newReserveRatio;
+    }
+
+    // Admin function to update the price update interval
+    function updatePriceUpdateInterval(uint256 _newInterval) external onlyRole(ADMIN_ROLE) onlyRole(ADMIN_ROLE) {
+        priceUpdateInterval = _newInterval;
+    }
+
+    // Admin function to update the price floor
+    function updatePriceFloor(uint256 _newPriceFloor) external onlyRole(ADMIN_ROLE) onlyRole(ADMIN_ROLE) {
+        priceFloor = _newPriceFloor;
+    }
+
+    // Admin function to update the buyback price
+    function updateBuybackPrice(uint256 _newBuybackPrice) external onlyRole(ADMIN_ROLE) onlyRole(ADMIN_ROLE) {
+        buybackPrice = _newBuybackPrice;
+    }
+
+    // Placeholder for Oracle function (Replace with actual Oracle integration)
+    function getMarketPrice() public view returns (uint256) {
+        // **REPLACE THIS WITH ACTUAL ORACLE INTEGRATION**
+        // This is a placeholder. In a real implementation, you would:
+        // 1. Call your oracle contract (e.g., Chainlink) to get the latest price.
+        // 2. Process the oracle's response to get the price in USD (scaled by 8 decimals).
+        // For example, if your oracle returns the price scaled by 8 decimals, you'd need to adjust accordingly.
+        // For now, let's return a fixed value for demonstration purposes.
+        return 200; // Example: $2.00 (scaled by 100)
+    }
 }
